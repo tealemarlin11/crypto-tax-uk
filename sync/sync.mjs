@@ -124,9 +124,13 @@ async function runKraken() {
     const res = await kraken("/0/private/TradesHistory", { ofs });
     total = res.count; const ids = Object.keys(res.trades); if (!ids.length) break;
     for (const id of ids) { const t = res.trades[id], p = pmap[t.pair];
-      if (!p) { warn(`Kraken pair ${t.pair} not recognised (${id}).`); continue; }
-      await emitTrade({ src: "kraken", id, ms: t.time * 1000, base: kAsset(p.base), quote: kAsset(p.quote), side: t.type,
-        baseQty: +t.vol, quoteQty: +t.cost, feeAsset: kAsset(p.quote), feeQty: +t.fee }); n++; }
+      let pp = p;
+      if (!pp) { // old or renamed pair: split the name using a known quote asset
+        const q = ["USDT", "USDC", "XBT", "ETH", "GBP", "USD", "EUR"].find(x => t.pair.endsWith(x) && t.pair.length > x.length + 1);
+        if (q) { pp = { base: t.pair.slice(0, -q.length), quote: q }; warn(`Kraken pair ${t.pair} guessed as ${pp.base}/${pp.quote}. Check these rows.`); }
+        else { warn(`Kraken pair ${t.pair} not recognised (${id}). Add it by hand.`); continue; } }
+      await emitTrade({ src: "kraken", id, ms: t.time * 1000, base: kAsset(pp.base), quote: kAsset(pp.quote), side: t.type,
+        baseQty: +t.vol, quoteQty: +t.cost, feeAsset: kAsset(pp.quote), feeQty: +t.fee }); n++; }
     ofs += ids.length; console.log(`Kraken trades: ${Math.min(ofs, total)}/${total}`);
   }
   ofs = 0; total = Infinity; let inc = 0;
@@ -146,12 +150,21 @@ async function runKraken() {
 
 /* ---------- BINANCE ---------- */
 async function binance(path, params = {}) {
-  const q = new URLSearchParams({ ...params, timestamp: Date.now(), recvWindow: 60000 }).toString();
-  const sig = crypto.createHmac("sha256", BINANCE_SECRET).update(q).digest("hex");
-  const r = await fetch(`https://api.binance.com${path}?${q}&signature=${sig}`, { headers: { "X-MBX-APIKEY": BINANCE_KEY } });
-  const j = await r.json(); if (!r.ok) throw new Error(`Binance ${path}: ${JSON.stringify(j)}`);
-  await sleep(250); return j;
+  for (let tries = 0; tries < 4; tries++) {
+    const q = new URLSearchParams({ ...params, timestamp: Date.now(), recvWindow: 60000 }).toString();
+    const sig = crypto.createHmac("sha256", BINANCE_SECRET).update(q).digest("hex");
+    const r = await fetch(`https://api.binance.com${path}?${q}&signature=${sig}`, { headers: { "X-MBX-APIKEY": BINANCE_KEY } });
+    const j = await r.json();
+    if (!r.ok) {
+      if (r.status === 429 || r.status === 418 || j.code === -1003) { console.log("Binance says slow down. Waiting 90s..."); await sleep(90000); continue; }
+      throw new Error(`Binance ${path}: ${JSON.stringify(j)}`);
+    }
+    await sleep(300); return j;
+  }
+  throw new Error(`Binance ${path}: still rate limited after waiting. Try again in an hour.`);
 }
+// run one stage; if it fails, note it and carry on with the rest
+async function safe(label, fn) { try { await fn(); } catch (e) { warn(`Binance step "${label}" failed and was skipped: ${e.message.slice(0, 200)}`); } }
 async function windows(days, fn) {
   const step = days * 864e5; for (let s = START; s < Date.now(); s += step) await fn(s, Math.min(s + step - 1, Date.now()));
 }
@@ -159,26 +172,28 @@ async function runBinance() {
   console.log("Binance: discovering assets...");
   const assets = new Set((process.env.BINANCE_EXTRA_ASSETS || "").split(",").map(s => s.trim().toUpperCase()).filter(Boolean));
   const acct = await binance("/api/v3/account"); acct.balances.forEach(b => { if (+b.free + +b.locked > 0) assets.add(b.asset); });
-  await windows(90, async (s, e) => {
+  await safe("deposit and withdrawal history", () => windows(90, async (s, e) => {
     for (const l of await binance("/sapi/v1/capital/deposit/hisrec", { startTime: s, endTime: e, limit: 1000 })) assets.add(l.coin);
     for (const l of await binance("/sapi/v1/capital/withdraw/history", { startTime: s, endTime: e, limit: 1000 })) assets.add(l.coin);
-  });
+  }));
   // rewards, airdrops, staking, savings interest
   let inc = 0;
-  await windows(90, async (s, e) => {
+  await safe("rewards and airdrops", () => windows(90, async (s, e) => {
     const r = await binance("/sapi/v1/asset/assetDividend", { startTime: s, endTime: e, limit: 500 });
     for (const d of r.rows || []) { assets.add(d.asset); const p = await gbpPrice(d.asset, d.divTime);
       if (p == null) warn(`No GBP price for ${d.asset} reward (${d.id}).`);
       R(ukDate(d.divTime), "income", d.asset, +d.amount, (p ?? 0) * +d.amount, 0, `binance:div${d.id || d.tranId}:income`); inc++;
       if (!/staking|interest|reward|airdrop|distribution|dividend/i.test(d.enInfo || "")) warn(`Binance payout "${d.enInfo}" ${d.amount} ${d.asset}. Check it is income.`); }
-  });
+  }));
   // Binance Convert
-  await windows(30, async (s, e) => {
+  if (process.env.BINANCE_CONVERT !== "yes") warn("Binance Convert swaps were skipped. If you used Convert, set BINANCE_CONVERT=yes in .env and set START_DATE to when you started on Binance.");
+  else await safe("Convert swaps", () => windows(30, async (s, e) => {
+    await sleep(15000);
     const r = await binance("/sapi/v1/convert/tradeFlow", { startTime: s, endTime: e, limit: 1000 });
     for (const c of r.list || []) { if (c.orderStatus !== "SUCCESS") continue; assets.add(c.fromAsset); assets.add(c.toAsset);
       await emitTrade({ src: "binance", id: "convert" + c.orderId, ms: c.createTime, base: c.toAsset, quote: c.fromAsset, side: "buy",
         baseQty: +c.toAmount, quoteQty: +c.fromAmount, feeAsset: "", feeQty: 0 }); }
-  });
+  }));
   // spot trades: find symbols for every asset I ever touched
   const info = (await (await fetch("https://api.binance.com/api/v3/exchangeInfo")).json()).symbols;
   const bySym = Object.fromEntries(info.map(s => [s.symbol, s]));
