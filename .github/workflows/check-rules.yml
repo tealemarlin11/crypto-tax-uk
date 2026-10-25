@@ -1,0 +1,39 @@
+name: Watch UK tax rules
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: write
+  issues: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check GOV.UK pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p rules-watch && touch rules-watch/hashes.txt
+          URLS=(
+            "https://www.gov.uk/capital-gains-tax/rates"
+            "https://www.gov.uk/capital-gains-tax/allowances"
+            "https://www.gov.uk/hmrc-internal-manuals/cryptoassets-manual"
+          )
+          CHANGED=""
+          : > new.txt
+          for u in "${URLS[@]}"; do
+            h=$(curl -sL "$u" | sed -e 's/<[^>]*>//g' | tr -s ' \n' | sha256sum | cut -d' ' -f1)
+            echo "$u $h" >> new.txt
+            old=$(grep -F "$u " rules-watch/hashes.txt | cut -d' ' -f2 || true)
+            if [ -n "$old" ] && [ "$old" != "$h" ]; then CHANGED="$CHANGED\n- $u"; fi
+          done
+          mv new.txt rules-watch/hashes.txt
+          if [ -n "$CHANGED" ]; then
+            gh issue create --title "UK tax rules page changed" \
+              --body "$(printf "These pages changed. Check them, then update the RULES block in index.html.\n$CHANGED")"
+          fi
+          git config user.name "rules-bot"; git config user.email "bot@users.noreply.github.com"
+          git add rules-watch/hashes.txt
+          git diff --staged --quiet || git commit -m "Update rule hashes" && git push
