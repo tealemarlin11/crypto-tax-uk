@@ -1,0 +1,5 @@
+.env
+exchange-import.csv
+exchange-warnings.txt
+crypto-tax-backup-*.json
+node_modules/
