@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en-GB" data-theme="cream">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Crypto Tax (UK)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#FAF6EC;--card:#FFFFFF;--ink:#222;--muted:#555;--brand:#1F5F8B;--brandtxt:#fff;--good:#1B6E3C;--bad:#A12B2B;--line:#D9D2BF;--warn:#FFF1C9;--fs:18px}
+[data-theme=blue]{--bg:#EAF3FA;--line:#BFD4E4}
+[data-theme=dark]{--bg:#1E2227;--card:#2A3036;--ink:#EEE;--muted:#C4C9CE;--brand:#7DB8E8;--brandtxt:#12202B;--good:#6FD08C;--bad:#FF9A9A;--line:#454D55;--warn:#4A4122}
+*{box-sizing:border-box}
+html{font-size:var(--fs)}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Atkinson Hyperlegible",Verdana,Tahoma,sans-serif;line-height:1.75;letter-spacing:.02em;word-spacing:.1em;text-align:left}
+header{padding:1rem;max-width:1000px;margin:auto}
+h1{font-size:1.6rem;margin:.2rem 0}
+h2{font-size:1.35rem;margin:1.6rem 0 .6rem}
+h3{font-size:1.1rem;margin:1rem 0 .4rem}
+main{max-width:1000px;margin:auto;padding:0 1rem 4rem}
+nav{display:flex;flex-wrap:wrap;gap:.5rem;margin:.8rem 0}
+button,.btn,select,input,textarea{font:inherit;letter-spacing:inherit;min-height:48px;border-radius:10px;border:2px solid var(--line);padding:.4rem .8rem;background:var(--card);color:var(--ink)}
+button,.btn{cursor:pointer;font-weight:700}
+nav button.on,button.primary{background:var(--brand);color:var(--brandtxt);border-color:var(--brand)}
+button.danger{border-color:var(--bad);color:var(--bad)}
+button:focus,input:focus,select:focus,textarea:focus{outline:4px solid #F2A900;outline-offset:2px}
+.card{background:var(--card);border:2px solid var(--line);border-radius:14px;padding:1rem 1.2rem;margin:.8rem 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.8rem}
+.big{font-size:1.7rem;font-weight:700;line-height:1.3}
+.muted{color:var(--muted)}
+.good{color:var(--good);font-weight:700}.bad{color:var(--bad);font-weight:700}
+.explain{background:var(--warn);border-radius:12px;padding:.8rem 1rem;margin:.8rem 0;border-left:8px solid #F2A900}
+.explain b:first-child{display:block}
+label{display:block;font-weight:700;margin-top:.8rem}
+label small{display:block;font-weight:400;color:var(--muted)}
+input,select,textarea{width:100%}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.8rem}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:560px}
+th,td{padding:.6rem .7rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:rgba(127,127,127,.12)}
+.bar{height:22px;border-radius:6px;background:var(--brand);min-width:4px}
+.tag{display:inline-block;padding:0 .6rem;border-radius:8px;border:2px solid var(--line);font-size:.85rem}
+.tools{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.hide{display:none}
+@media print{nav,.tools,header .tools,.noprint{display:none!important}body{background:#fff;color:#000}.card{border:1px solid #999}}
+</style>
+</head>
+<body>
+<header>
+  <div class="tools noprint" style="justify-content:space-between">
+    <h1>🪙 My Crypto Tax <span class="muted">(UK)</span></h1>
+    <div class="tools">
+      <button onclick="setSize(-1)" aria-label="Smaller text">A−</button>
+      <button onclick="setSize(1)" aria-label="Bigger text">A+</button>
+      <select id="theme" onchange="setTheme(this.value)" aria-label="Colour theme" style="width:auto">
+        <option value="cream">Cream</option><option value="blue">Soft blue</option><option value="dark">Dark</option>
+      </select>
+    </div>
+  </div>
+  <nav id="nav" class="noprint"></nav>
+</header>
+<main id="view"></main>
+
+<script>
+/* ============ RULES (edit here when HMRC changes things) ============ */
+const RULES = {
+  lastChecked: "2026-10-25",
+  basicBand: 37700,
+  aea: y => y <= 2022 ? 12300 : y === 2023 ? 6000 : 3000,
+  rates: dateStr => dateStr < "2024-10-30" ? {low:.10, high:.20} : {low:.18, high:.24},
+  sources: [
+    ["CGT rates","https://www.gov.uk/capital-gains-tax/rates"],
+    ["CGT allowances","https://www.gov.uk/capital-gains-tax/allowances"],
+    ["HMRC Cryptoassets Manual","https://www.gov.uk/hmrc-internal-manuals/cryptoassets-manual"],
+    ["Same-day and 30-day rules","https://www.gov.uk/hmrc-internal-manuals/cryptoassets-manual/crypto22250"],
+    ["Section 104 pooling","https://www.gov.uk/hmrc-internal-manuals/cryptoassets-manual/crypto22200"]
+  ]
+};
+
+/* ============ STATE ============ */
+const KEY = "cryptoTaxUK.v1";
+let S = JSON.parse(localStorage.getItem(KEY) || "null") || {tx:[], prices:{}, snaps:[], set:{income:0, theme:"cream", size:18}};
+let TAB = "dash", YEAR = null;
+const save = () => localStorage.setItem(KEY, JSON.stringify(S));
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const gbp = n => (n < 0 ? "−" : "") + "£" + Math.abs(n).toLocaleString("en-GB",{minimumFractionDigits:2,maximumFractionDigits:2});
+const qf = n => Number(n).toLocaleString("en-GB",{maximumFractionDigits:8});
+const today = () => new Date().toISOString().slice(0,10);
+const gainHtml = n => n >= 0 ? `<span class="good">▲ ${gbp(n)}</span>` : `<span class="bad">▼ ${gbp(n)}</span>`;
+function taxYearStart(d){const [y,m,dd]=d.split("-").map(Number);return (m>4||(m===4&&dd>=6))?y:y-1}
+const yearLabel = y => `${y}/${String((y+1)%100).padStart(2,"0")}`;
+const daysBetween = (a,b) => Math.round((new Date(b)-new Date(a))/864e5);
+
+/* ============ TAX ENGINE (same-day, 30-day, Section 104 pool) ============ */
+const isAcq = t => t.type==="buy" || t.type==="income";
+function calc(txs){
+  const by = {}, disposals = [], pools = {}, warnings = [], income = [];
+  txs.forEach(t => (by[t.asset] = by[t.asset] || []).push(t));
+  for (const a in by){
+    const ev = by[a].slice().sort((x,y)=> x.date<y.date?-1:x.date>y.date?1:0);
+    const acq = ev.filter(isAcq).map(e=>({...e, rem:e.qty, cost:e.gbp+e.fee}));
+    const dis = ev.filter(e=>!isAcq(e)).map(e=>({...e, rem:e.qty, proceeds:e.gbp-e.fee, matched:[]}));
+    const match = (d,x,rule)=>{ if(d.rem<1e-12||x.rem<1e-12) return;
+      const q=Math.min(d.rem,x.rem); d.matched.push({rule,qty:q,cost:q*(x.cost/x.qty)}); d.rem-=q; x.rem-=q; };
+    dis.forEach(d => acq.filter(x=>x.date===d.date).forEach(x=>match(d,x,"Same-day rule")));
+    dis.forEach(d => acq.filter(x=>x.date>d.date && daysBetween(d.date,x.date)<=30).forEach(x=>match(d,x,"30-day rule")));
+    const pool = {qty:0,cost:0};
+    const all = [...acq.map(x=>({k:"a",x,date:x.date})), ...dis.map(x=>({k:"d",x,date:x.date}))]
+      .sort((p,q)=> p.date<q.date?-1:p.date>q.date?1:(p.k==="a"?-1:1));
+    all.forEach(e=>{
+      if(e.k==="a"){ pool.qty += e.x.rem; pool.cost += e.x.rem*(e.x.cost/e.x.qty);
+        if(e.x.type==="income") income.push({date:e.x.date,asset:a,qty:e.x.qty,value:e.x.gbp,notes:e.x.notes}); }
+      else { const d=e.x; let cost=d.matched.reduce((s,m)=>s+m.cost,0); const rules=d.matched.map(m=>m.rule);
+        if(d.rem>1e-12){ const q=Math.min(d.rem,pool.qty);
+          if(d.rem>pool.qty+1e-9) warnings.push(`${a}: you sold ${qf(d.rem-pool.qty)} more than you bought up to ${d.date}. Check for a missing buy.`);
+          if(pool.qty>0){ const c=pool.cost*(q/pool.qty); cost+=c; pool.cost-=c; pool.qty-=q; rules.push("Section 104 pool"); } }
+        disposals.push({id:d.id,date:d.date,asset:a,qty:d.qty,proceeds:d.proceeds,cost,gain:d.proceeds-cost,rules:[...new Set(rules)],type:d.type,ty:taxYearStart(d.date)}); }
+    });
+    pools[a] = pool;
+  }
+  disposals.sort((a,b)=>a.date<b.date?-1:1);
+  return {disposals,pools,warnings,income};
+}
+function yearReport(res,y){
+  const ds = res.disposals.filter(d=>d.ty===y);
+  const proceeds = ds.reduce((s,d)=>s+d.proceeds,0), costs = ds.reduce((s,d)=>s+d.cost,0);
+  const gains = ds.filter(d=>d.gain>0).reduce((s,d)=>s+d.gain,0), losses = -ds.filter(d=>d.gain<0).reduce((s,d)=>s+d.gain,0);
+  const net = gains-losses, aea = RULES.aea(y), taxable = Math.max(0,net-aea);
+  const band = Math.max(0,RULES.basicBand-(+S.set.income||0));
+  const r = RULES.rates(y>=2025?"2025-01-01":y===2024?"2025-01-01":"2000-01-01");
+  const lowPart = Math.min(taxable,band), highPart = taxable-lowPart;
+  const tax = lowPart*r.low + highPart*r.high;
+  const inc = res.income.filter(i=>taxYearStart(i.date)===y);
+  return {ds,proceeds,costs,gains,losses,net,aea,taxable,tax,r,lowPart,highPart,inc,incTotal:inc.reduce((s,i)=>s+i.value,0),aeaLeft:Math.max(0,aea-Math.max(0,net)),
+    mixed:y===2024};
+}
+
+/* ============ DATA CHECKS ============ */
+function issues(res){
+  const zero=S.tx.filter(t=>+t.gbp===0);
+  const seen={}, dups=[];
+  S.tx.slice().sort((a,b)=>a.date<b.date?-1:1).forEach(t=>{
+    const k=[t.date,t.type,t.asset,t.qty,t.gbp].join("|");
+    if(seen[k]) dups.push({keep:seen[k],extra:t}); else seen[k]=t; });
+  const warns=res.warnings;
+  return {zero,dups,warns,count:zero.length+dups.length+warns.length};
+}
+function fixVal(id){ const v=$("fx_"+id).value; if(v===""||isNaN(+v)||+v<0){ alert("Type a £ value first."); return; }
+  const t=S.tx.find(x=>x.id===id); t.gbp=+v; save(); render(); }
+function check(res,iss){
+  const names={buy:"🟢 Buy",sell:"🔴 Sell",income:"🎁 Income",giftout:"📤 Gift away"};
+  return `<h2>🔎 Check your data</h2>
+  ${iss.count===0?`<div class="card"><div class="big good">✅ All clear</div><p>No problems found. Nothing is missing a value, and no sale is bigger than what you held.</p></div>`:
+  explain("Why this matters","A wrong value gives a wrong gain. Fix the items below, then run your report. The red number on the Check tab goes down as you fix them.")}
+  ${iss.zero.length?`<h3>1. Rows with a £0 value (${iss.zero.length})</h3>
+  <p>The importer could not find a price. Look up the £ value on that day, then type it in.</p>
+  <div class="card tablewrap"><table><tr><th>Date</th><th>Type</th><th>Coin</th><th>Amount</th><th>Note</th><th>£ value</th><th></th></tr>
+  ${iss.zero.map(t=>`<tr><td>${t.date}</td><td>${names[t.type]}</td><td><b>${esc(t.asset)}</b></td><td>${qf(t.qty)}</td><td>${esc(t.notes)}</td>
+   <td><input id="fx_${t.id}" type="number" step="any" min="0" style="min-width:120px"></td>
+   <td><button class="primary" onclick="fixVal('${t.id}')">Save</button></td></tr>`).join("")}</table></div>
+  <p class="muted">A real £0 is fine, for example a gift received. If so, delete nothing and ignore the row.</p>`:""}
+  ${iss.warns.length?`<h3>2. Sold more than you held (${iss.warns.length})</h3>
+  <div class="card"><ul>${iss.warns.map(w=>`<li>${esc(w)}</li>`).join("")}</ul>
+  <p>Usual cause: a buy is missing, or coins came from another wallet or exchange. Add the missing buy in ➕ Add.</p></div>`:""}
+  ${iss.dups.length?`<h3>3. Possible duplicates (${iss.dups.length})</h3>
+  <p>These look identical to an earlier row. Two real trades can match, so check first.</p>
+  <div class="card tablewrap"><table><tr><th>Date</th><th>Type</th><th>Coin</th><th>Amount</th><th>£ value</th><th></th></tr>
+  ${iss.dups.map(d=>`<tr><td>${d.extra.date}</td><td>${names[d.extra.type]}</td><td><b>${esc(d.extra.asset)}</b></td><td>${qf(d.extra.qty)}</td><td>${gbp(d.extra.gbp)}</td>
+   <td><button class="danger" onclick="delTx('${d.extra.id}')">Delete this copy</button></td></tr>`).join("")}</table></div>`:""}`;
+}
+
+/* ============ UI ============ */
+const TABS = [["dash","🏠","Home"],["tx","📒","Transactions"],["add","➕","Add"],["check","🔎","Check"],["report","🧾","Tax report"],["port","📈","Portfolio"],["rules","⚖️","Rules"],["data","💾","Backup"]];
+function nav(n=0){ $("nav").innerHTML = TABS.map(([k,i,l])=>`<button class="${TAB===k?"on":""}" onclick="go('${k}')">${i} ${l}${k==="check"&&n?` <span class="tag" style="background:#F2A900;color:#222;border-color:#F2A900">${n}</span>`:""}</button>`).join(""); }
+function go(t){ TAB=t; render(); window.scrollTo(0,0); }
+function setSize(d){ S.set.size=Math.min(26,Math.max(15,S.set.size+d*2)); applyLook(); save(); }
+function setTheme(t){ S.set.theme=t; applyLook(); save(); }
+function applyLook(){ document.documentElement.style.setProperty("--fs",S.set.size+"px"); document.documentElement.dataset.theme=S.set.theme; $("theme").value=S.set.theme; }
+function render(){ const res=calc(S.tx); const iss=issues(res); nav(iss.count); $("view").innerHTML = ({dash,tx,add,check,report,port,rules,data})[TAB](res,iss); if(TAB==="add") swapToggle(); }
+const explain = (title,text) => `<div class="explain"><b>💡 ${title}</b>${text}</div>`;
+
+function holdings(res){
+  return Object.entries(res.pools).filter(([a,p])=>p.qty>1e-9).map(([a,p])=>{
+    const price=+(S.prices[a]?.gbp)||0, value=p.qty*price;
+    return {a,qty:p.qty,cost:p.cost,price,value,unreal:price?value-p.cost:null};
+  }).sort((x,y)=>y.value-x.value);
+}
+
+function dash(res){
+  const h=holdings(res), tv=h.reduce((s,x)=>s+x.value,0), tc=h.reduce((s,x)=>s+x.cost,0);
+  const y=taxYearStart(today()), r=yearReport(res,y), missing=h.filter(x=>!x.price).map(x=>x.a);
+  const max=Math.max(1,...h.map(x=>x.value));
+  return `
+  <h2>Hello 👋 Here is where you stand</h2>
+  <div class="grid">
+    <div class="card"><div class="muted">💰 Portfolio value</div><div class="big">${gbp(tv)}</div></div>
+    <div class="card"><div class="muted">🏷️ What you paid (pool cost)</div><div class="big">${gbp(tc)}</div></div>
+    <div class="card"><div class="muted">📊 Unrealised gain</div><div class="big">${gainHtml(tv-tc)}</div></div>
+  </div>
+  <h2>Tax year ${yearLabel(y)} so far</h2>
+  <div class="grid">
+    <div class="card"><div class="muted">Net gains</div><div class="big">${gainHtml(r.net)}</div></div>
+    <div class="card"><div class="muted">Tax-free allowance left</div><div class="big">${gbp(r.aeaLeft)}</div><div class="muted">of ${gbp(r.aea)}</div></div>
+    <div class="card"><div class="muted">Estimated CGT</div><div class="big">${gbp(r.tax)}</div></div>
+  </div>
+  ${explain("In plain words",`You can make <b>${gbp(r.aea)}</b> of profit each tax year before paying CGT. The year runs 6 April to 5 April. Unused allowance is lost.`)}
+  ${issues(res).count?`<div class="card"><h3>⚠️ ${issues(res).count} things to check</h3><p>Some rows have no value, or look wrong.</p><button class="primary" onclick="go('check')">🔎 Open Check</button></div>`:""}
+  ${missing.length?`<div class="card"><h3>⚠️ Missing prices</h3><p>No price for: <b>${missing.join(", ")}</b>. Add them in Portfolio.</p></div>`:""}
+  <h2>Where your money sits</h2>
+  <div class="card">${h.length?h.map(x=>`<div style="margin:.5rem 0"><b>${esc(x.a)}</b> <span class="muted">${gbp(x.value)}</span><div class="bar" style="width:${Math.max(1,x.value/max*100)}%"></div></div>`).join(""):"<p>Nothing here yet. Go to ➕ Add.</p>"}</div>
+  <h2>Value over time</h2>
+  <div class="card">${chart()}</div>`;
+}
+function chart(){
+  const s=S.snaps; if(s.length<2) return `<p class="muted">The chart appears after you save prices on two different days.</p>`;
+  const W=600,H=200,vs=s.map(x=>x.value),mn=Math.min(...vs),mx=Math.max(...vs),rg=(mx-mn)||1;
+  const pts=s.map((x,i)=>`${(i/(s.length-1))*(W-20)+10},${H-20-((x.value-mn)/rg)*(H-40)}`).join(" ");
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%" role="img" aria-label="Portfolio value over time"><polyline fill="none" stroke="var(--brand)" stroke-width="4" points="${pts}"/></svg>
+  <div class="tools muted" style="justify-content:space-between"><span>${s[0].date}: ${gbp(s[0].value)}</span><span>${s.at(-1).date}: ${gbp(s.at(-1).value)}</span></div>`;
+}
+
+function tx(res){
+  const f=(window._f||"").toUpperCase(); const list=S.tx.filter(t=>!f||t.asset===f).sort((a,b)=>a.date<b.date?1:-1);
+  const names={buy:"🟢 Buy",sell:"🔴 Sell",income:"🎁 Income",giftout:"📤 Gift away"};
+  return `<h2>Your transactions (${S.tx.length})</h2>
+  <label>Filter by coin<small>Type a ticker like BTC. Leave empty to see all.</small><input value="${esc(f)}" oninput="window._f=this.value;render()" style="max-width:240px"></label>
+  <div class="card tablewrap"><table><tr><th>Date</th><th>Type</th><th>Coin</th><th>Amount</th><th>£ value</th><th>Fee</th><th>Notes</th><th></th></tr>
+  ${list.map(t=>`<tr><td>${t.date}</td><td>${names[t.type]}</td><td><b>${esc(t.asset)}</b></td><td>${qf(t.qty)}</td><td>${gbp(t.gbp)}</td><td>${gbp(t.fee)}</td><td>${esc(t.notes)}</td><td><button class="danger" onclick="delTx('${t.id}')">Delete</button></td></tr>`).join("")||`<tr><td colspan=8>No transactions yet.</td></tr>`}
+  </table></div>`;
+}
+function delTx(id){ if(confirm("Delete this transaction?")){ S.tx=S.tx.filter(t=>t.id!==id); save(); render(); } }
+
+function add(){
+  return `<h2>Add a transaction</h2>
+  ${explain("Remember","Swapping one coin for another counts as a sale of the first coin. Moving coins between your own wallets does not count. Do not add those.")}
+  <div class="card">
+  <label>What happened?<select id="f_type" onchange="swapToggle()">
+    <option value="buy">🟢 Bought crypto with £</option><option value="sell">🔴 Sold crypto for £</option>
+    <option value="swap">🔁 Swapped one coin for another</option><option value="income">🎁 Received (staking, airdrop, mining)</option>
+    <option value="giftout">📤 Gave away or spent</option></select></label>
+  <div class="row"><label>Date<input type="date" id="f_date" value="${today()}"></label>
+  <label>Coin<small>Ticker, like BTC</small><input id="f_asset" placeholder="BTC" autocapitalize="characters"></label>
+  <label>Amount of coin<input id="f_qty" type="number" step="any" min="0"></label></div>
+  <div id="swapbox" class="hide row"><label>Coin you received<input id="f_asset2" placeholder="ETH" autocapitalize="characters"></label>
+  <label>Amount you received<input id="f_qty2" type="number" step="any" min="0"></label></div>
+  <div class="row"><label>Value in £<small id="f_hint">What you paid in £</small><input id="f_gbp" type="number" step="any" min="0"></label>
+  <label>Fee in £<small>Optional</small><input id="f_fee" type="number" step="any" min="0" value="0"></label></div>
+  <label>Notes<small>Optional. Exchange name, wallet, reason.</small><input id="f_notes"></label>
+  <p><button class="primary" onclick="addTx()">Save transaction</button></p></div>
+
+  <h2>Import from a CSV file</h2>
+  <div class="card"><p>Columns: <b>date, type, asset, quantity, gbp, fee, notes</b><br>Types: buy, sell, income, giftout. Dates like 2025-06-30.</p>
+  <div class="tools"><button onclick="csvTemplate()">⬇️ Get a blank template</button>
+  <label class="btn" style="margin:0;display:inline-flex;align-items:center">📂 Choose CSV file<input type="file" accept=".csv" onchange="csvImport(this.files[0])" style="display:none"></label></div></div>`;
+}
+function swapToggle(){ const t=$("f_type")?.value; if(!t) return; $("swapbox").classList.toggle("hide",t!=="swap");
+  $("f_hint").textContent = {buy:"What you paid in £",sell:"What you received in £",swap:"£ value of the swap on that day",income:"£ value when you received it",giftout:"£ market value that day"}[t]; }
+const uid = () => Math.random().toString(36).slice(2,10);
+function addTx(){
+  const t=$("f_type").value,date=$("f_date").value,asset=$("f_asset").value.trim().toUpperCase(),qty=+$("f_qty").value,g=+$("f_gbp").value,fee=+$("f_fee").value||0,notes=$("f_notes").value;
+  if(!date||!asset||!(qty>0)||g<0||$("f_gbp").value===""){ alert("Please fill in date, coin, amount and £ value."); return; }
+  if(t==="swap"){ const a2=$("f_asset2").value.trim().toUpperCase(),q2=+$("f_qty2").value;
+    if(!a2||!(q2>0)){ alert("Please fill in the coin you received."); return; }
+    S.tx.push({id:uid(),date,type:"sell",asset,qty,gbp:g,fee,notes:("Swap to "+a2+" "+notes).trim()},{id:uid(),date,type:"buy",asset:a2,qty:q2,gbp:g,fee:0,notes:("Swap from "+asset+" "+notes).trim()});
+  } else S.tx.push({id:uid(),date,type:t,asset,qty,gbp:g,fee,notes});
+  save(); alert("Saved ✅"); go("tx");
+}
+function csvTemplate(){ dl("template.csv","date,type,asset,quantity,gbp,fee,notes\n2025-05-01,buy,BTC,0.05,3000,5,Coinbase\n"); }
+function parseCSV(text){ return text.trim().split(/\r?\n/).map(l=>{const o=[];let c="",q=false;for(const ch of l){if(ch==='"')q=!q;else if(ch===","&&!q){o.push(c);c=""}else c+=ch}o.push(c);return o.map(x=>x.trim())}); }
+function csvImport(file){ if(!file) return; file.text().then(txt=>{
+  const rows=parseCSV(txt).slice(1); let n=0,bad=0,dup=0;
+  rows.forEach(r=>{ const [date,type,asset,q,g,fee,notes]=r; const ty=(type||"").toLowerCase();
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(date||"")||!["buy","sell","income","giftout"].includes(ty)||!asset||!(+q>0)||isNaN(+g)){bad++;return}
+    if(/^(kraken|binance):/.test(notes||"") && S.tx.some(t=>t.notes===notes)){dup++;return}
+    S.tx.push({id:uid(),date,type:ty,asset:asset.toUpperCase(),qty:+q,gbp:+g,fee:+fee||0,notes:notes||""}); n++; });
+  save(); alert(`Imported ${n} rows. Skipped ${dup} already imported and ${bad} that looked wrong.`); go(issues(calc(S.tx)).count?"check":"tx"); }); }
+
+function report(res){
+  const years=[...new Set([...res.disposals.map(d=>d.ty),...res.income.map(i=>taxYearStart(i.date)),taxYearStart(today())])].sort((a,b)=>b-a);
+  if(YEAR===null||!years.includes(YEAR)) YEAR=taxYearStart(today());
+  const r=yearReport(res,YEAR), pre=!window._ran;
+  return `<h2>Tax report</h2>
+  <div class="card tools"><label style="margin:0">Tax year<select onchange="YEAR=+this.value;window._ran=false;render()">${years.map(y=>`<option value="${y}" ${y===YEAR?"selected":""}>${yearLabel(y)}</option>`).join("")}</select></label>
+  <button class="primary" onclick="window._ran=true;render()">▶️ Run report</button></div>
+  <label>Your other taxable income this year in £<small>After personal allowance. This decides whether you pay 18% or 24%. Use 0 if unsure, but the estimate may be low.</small>
+  <input type="number" value="${S.set.income}" onchange="S.set.income=+this.value;save();render()" style="max-width:240px"></label>
+  ${pre?`<p class="muted">Press <b>Run report</b> to see ${yearLabel(YEAR)}.</p>`:`
+  <h3>1. Summary for ${yearLabel(YEAR)}</h3>
+  <div class="card tablewrap"><table>
+   <tr><td>Number of disposals</td><td><b>${r.ds.length}</b></td></tr>
+   <tr><td>Total sale proceeds</td><td><b>${gbp(r.proceeds)}</b></td></tr>
+   <tr><td>Total allowable costs</td><td><b>${gbp(r.costs)}</b></td></tr>
+   <tr><td>Total gains</td><td><b>${gbp(r.gains)}</b></td></tr>
+   <tr><td>Total losses</td><td><b>${gbp(r.losses)}</b></td></tr>
+   <tr><td>Net gain or loss</td><td>${gainHtml(r.net)}</td></tr>
+   <tr><td>Tax-free allowance</td><td><b>${gbp(r.aea)}</b></td></tr>
+   <tr><td>Taxable gain</td><td><b>${gbp(r.taxable)}</b></td></tr>
+   <tr><td>Estimated CGT (${r.r.low*100}% / ${r.r.high*100}%)</td><td><b>${gbp(r.tax)}</b></td></tr></table></div>
+  ${explain("What this means",r.net<=0?`You made a net <b>loss</b>. No CGT is due. You can report it to HMRC and carry it forward.`:r.taxable===0?`Your gains are inside the tax-free allowance. <b>No CGT is due.</b>`:`You have <b>${gbp(r.taxable)}</b> of taxable gain. The estimate is <b>${gbp(r.tax)}</b>.`)}
+  ${r.ds.length>0&&(r.proceeds>50000||r.net>r.aea)?explain("You may need to report this","You must report if proceeds are over £50,000, or gains are over the allowance. Use Self Assessment, section SA108."):""}
+  ${r.mixed?explain("Mixed-rate year","2024/25 had two sets of rates, switching on 30 October 2024. This tool uses the newer rates, so the figure may be too high. Check with the HMRC calculator.") :""}
+  <h3>2. Self Assessment boxes (SA108)</h3>
+  <div class="card">Disposals: <b>${r.ds.length}</b> · Proceeds: <b>${gbp(r.proceeds)}</b> · Costs: <b>${gbp(r.costs)}</b> · Gains: <b>${gbp(r.gains)}</b> · Losses: <b>${gbp(r.losses)}</b></div>
+  <h3>3. Every disposal</h3>
+  <div class="card tablewrap"><table><tr><th>Date</th><th>Coin</th><th>Amount</th><th>Proceeds</th><th>Cost</th><th>Gain</th><th>Matched by</th></tr>
+  ${r.ds.map(d=>`<tr><td>${d.date}</td><td><b>${esc(d.asset)}</b></td><td>${qf(d.qty)}</td><td>${gbp(d.proceeds)}</td><td>${gbp(d.cost)}</td><td>${gainHtml(d.gain)}</td><td>${d.rules.map(x=>`<span class="tag">${x}</span>`).join(" ")}</td></tr>`).join("")||`<tr><td colspan=7>No disposals in this year.</td></tr>`}</table></div>
+  <h3>4. Crypto income (staking, airdrops)</h3>
+  <div class="card tablewrap"><table><tr><th>Date</th><th>Coin</th><th>Amount</th><th>£ value</th></tr>
+  ${r.inc.map(i=>`<tr><td>${i.date}</td><td>${esc(i.asset)}</td><td>${qf(i.qty)}</td><td>${gbp(i.value)}</td></tr>`).join("")||`<tr><td colspan=4>None.</td></tr>`}</table>
+  <p>Total: <b>${gbp(r.incTotal)}</b>. This is taxed as <b>income</b>, not CGT. Report it separately.</p></div>
+  <div class="tools noprint"><button onclick="reportCSV()">⬇️ Download CSV</button><button onclick="print()">🖨️ Print or save as PDF</button></div>
+  <p class="muted">This is an estimate to help you prepare. It is not tax advice. Check figures before you file.</p>`}`;
+}
+function reportCSV(){ const r=yearReport(calc(S.tx),YEAR);
+  dl(`cgt-${yearLabel(YEAR).replace("/","-")}.csv`,"date,asset,quantity,proceeds,cost,gain,matched_by\n"+r.ds.map(d=>[d.date,d.asset,d.qty,d.proceeds.toFixed(2),d.cost.toFixed(2),d.gain.toFixed(2),'"'+d.rules.join("; ")+'"'].join(",")).join("\n")); }
+
+function port(res){
+  const h=holdings(res);
+  return `<h2>Portfolio</h2>
+  ${explain("How prices work","Type a price yourself, or press fetch. Fetch uses the free CoinGecko service. You need the CoinGecko ID, like <b>bitcoin</b> or <b>ethereum</b>.")}
+  <div class="card tablewrap"><table><tr><th>Coin</th><th>Held</th><th>Cost</th><th>CoinGecko ID</th><th>Price £</th><th>Value</th><th>Gain</th></tr>
+  ${h.map(x=>`<tr><td><b>${esc(x.a)}</b></td><td>${qf(x.qty)}</td><td>${gbp(x.cost)}</td>
+   <td><input value="${esc(S.prices[x.a]?.cg||"")}" onchange="setP('${x.a}','cg',this.value)" style="min-width:140px"></td>
+   <td><input type="number" step="any" value="${x.price||""}" onchange="setP('${x.a}','gbp',this.value)" style="min-width:120px"></td>
+   <td>${gbp(x.value)}</td><td>${x.unreal===null?"–":gainHtml(x.unreal)}</td></tr>`).join("")||`<tr><td colspan=7>No holdings yet.</td></tr>`}</table></div>
+  <div class="tools"><button class="primary" onclick="fetchPrices()">🔄 Fetch live prices</button><button onclick="snap(true)">📸 Save today's value</button></div>
+  <h2>Value over time</h2><div class="card">${chart()}</div>`;
+}
+function setP(a,k,v){ S.prices[a]=S.prices[a]||{}; S.prices[a][k]=k==="gbp"?+v:v.trim().toLowerCase(); save(); render(); }
+function snap(msg){ const tv=holdings(calc(S.tx)).reduce((s,x)=>s+x.value,0); if(!tv) return;
+  const d=today(), i=S.snaps.findIndex(s=>s.date===d); if(i>=0) S.snaps[i].value=tv; else S.snaps.push({date:d,value:tv}); save(); if(msg){ alert("Saved ✅"); render(); } }
+async function fetchPrices(){
+  const ids=[...new Set(Object.values(S.prices).map(p=>p.cg).filter(Boolean))]; if(!ids.length){ alert("Add CoinGecko IDs first."); return; }
+  try{ const r=await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=gbp`); const j=await r.json();
+    for(const a in S.prices){ const id=S.prices[a].cg; if(id&&j[id]?.gbp) S.prices[a].gbp=j[id].gbp; }
+    save(); snap(false); render(); } catch(e){ alert("Could not fetch prices. Check your internet, or type prices by hand."); } }
+
+function rules(){
+  return `<h2>UK rules this tool uses</h2>
+  <p class="muted">Last checked by hand: <b>${RULES.lastChecked}</b></p>
+  <div class="card tablewrap"><table><tr><th>Rule</th><th>Value</th></tr>
+  <tr><td>Tax-free allowance (2024/25 onwards)</td><td><b>£3,000</b></td></tr>
+  <tr><td>CGT rates from 30 Oct 2024</td><td><b>18%</b> basic · <b>24%</b> higher</td></tr>
+  <tr><td>CGT rates before that</td><td>10% basic · 20% higher</td></tr>
+  <tr><td>Basic-rate band</td><td>£37,700</td></tr>
+  <tr><td>Tax year</td><td>6 April to 5 April</td></tr></table></div>
+  <h3>How your gains are worked out</h3>
+  <div class="card"><ol><li><b>Same-day rule.</b> Buys on the day you sell are matched first.</li>
+  <li><b>30-day rule.</b> Buys in the 30 days after a sale are matched next.</li>
+  <li><b>Section 104 pool.</b> Everything else uses the average cost of what you hold.</li></ol></div>
+  <h3>Official sources</h3><div class="card"><ul>${RULES.sources.map(([n,u])=>`<li><a href="${u}" target="_blank" rel="noopener">${n}</a></li>`).join("")}</ul></div>
+  ${explain("Rule monitoring","A weekly GitHub Action (included) checks these GOV.UK pages. It opens an issue in your repo when a page changes. Then update the RULES block at the top of this file.")}`;
+}
+
+function dl(name,text,type="text/csv"){ const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([text],{type})); a.download=name; a.click(); }
+function data(){
+  return `<h2>Backup and restore</h2>
+  ${explain("Important","Your data lives <b>only in this browser</b>. Clearing browser data deletes it. Download a backup often. Keep it somewhere private. Do <b>not</b> put it in a public GitHub repo.")}
+  <div class="card tools"><button class="primary" onclick="dl('crypto-tax-backup-'+today()+'.json',JSON.stringify(S,null,2),'application/json')">⬇️ Download backup</button>
+  <label class="btn" style="margin:0;display:inline-flex;align-items:center">⬆️ Restore backup<input type="file" accept=".json" style="display:none" onchange="restore(this.files[0])"></label>
+  <button class="danger" onclick="wipe()">🗑️ Delete everything</button></div>`;
+}
+function restore(f){ if(!f) return; f.text().then(t=>{ try{ const o=JSON.parse(t); if(!Array.isArray(o.tx)) throw 0; S=o; S.set=S.set||{income:0,theme:"cream",size:18}; save(); applyLook(); alert("Restored ✅"); go("dash"); }catch(e){ alert("That file does not look like a backup."); } }); }
+function wipe(){ if(confirm("Delete ALL data? This cannot be undone.")&&confirm("Really sure?")){ localStorage.removeItem(KEY); location.reload(); } }
+
+applyLook(); render();
+</script>
+</body>
+</html>
