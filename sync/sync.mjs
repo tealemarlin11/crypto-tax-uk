@@ -32,27 +32,48 @@ const rows = [], warns = [], warned = new Set();
 const warn = m => { if (!warned.has(m)) { warned.add(m); warns.push(m); console.log("⚠️ ", m); } };
 const R = (date, type, asset, qty, gbp, fee, note) => rows.push({ date, type, asset, qty, gbp, fee, note });
 
-/* ---------- GBP prices from Binance public candles ---------- */
-const pc = {};
+/* ---------- GBP prices (3 sources, with fallbacks) ---------- */
+const pc = {}, fxc = {};
+let binanceDown = false, binFails = 0;
 async function kline(symbol, ms) {
+  if (binanceDown) return null;
   const t = Math.floor(ms / 6e4) * 6e4;
   try {
     const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&startTime=${t}&limit=1`);
-    if (!r.ok) return null; const j = await r.json(); return Array.isArray(j) && j[0] ? +j[0][4] : null;
+    if (r.status === 400) return null;                       // symbol does not exist: normal
+    if (!r.ok) { if (++binFails >= 3) { binanceDown = true; warn(`Binance price service is not reachable (HTTP ${r.status}). Using Kraken and Frankfurter prices instead.`); } return null; }
+    const j = await r.json(); return Array.isArray(j) && j[0] ? +j[0][4] : null;
+  } catch { if (++binFails >= 3) { binanceDown = true; warn("Binance price service is not reachable. Using Kraken and Frankfurter prices instead."); } return null; }
+}
+// fiat or stablecoin -> GBP, using daily ECB rates from Frankfurter
+async function fxToGbp(cur, ms) {
+  const c = STABLE.has(cur) ? "USD" : cur, d = ukDate(ms), k = c + d; if (k in fxc) return fxc[k];
+  let rate = null;
+  for (const base of ["https://api.frankfurter.dev/v1/", "https://api.frankfurter.app/"]) {
+    try { const r = await fetch(`${base}${d}?base=${c}&symbols=GBP`); if (r.ok) { rate = (await r.json()).rates?.GBP ?? null; if (rate) break; } } catch {}
+  }
+  fxc[k] = rate; await sleep(100); return rate;
+}
+// crypto -> GBP using Kraken public candles (hourly if recent, daily if older)
+const toKraken = a => ({ BTC: "XBT", DOGE: "XDG" }[a] || a);
+async function krakenCandle(pair, ms) {
+  const ageDays = (Date.now() - ms) / 864e5; if (ageDays > 650) return null;
+  const iv = ageDays < 25 ? 60 : 1440, since = Math.floor(ms / 1000) - iv * 120;
+  try {
+    const r = await fetch(`https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${iv}&since=${since}`); const j = await r.json();
+    if (j.error?.length) return null; const key = Object.keys(j.result).find(x => x !== "last"); const c = j.result[key]; if (!c?.length) return null;
+    const t = ms / 1000; let pick = c[0]; for (const x of c) if (x[0] <= t) pick = x; return +pick[4];
   } catch { return null; }
 }
 async function gbpPrice(asset, ms) {
   if (asset === "GBP") return 1;
+  if (FIAT.has(asset) || STABLE.has(asset)) return fxToGbp(asset, ms);
   const k = asset + "|" + Math.floor(ms / 6e4); if (k in pc) return pc[k];
   let p = await kline(asset + "GBP", ms);
-  if (p == null) {
-    const g = await kline("GBPUSDT", ms); // USD per GBP
-    if (g) {
-      if (asset === "USD" || STABLE.has(asset)) p = 1 / g;
-      else { const u = await kline(asset + "USDT", ms); if (u != null) p = u / g; }
-    }
-  }
-  pc[k] = p; await sleep(50); return p;
+  if (p == null) { const u = await kline(asset + "USDT", ms), g = u != null ? await kline("GBPUSDT", ms) : null; if (u != null && g) p = u / g; }
+  if (p == null) p = await krakenCandle(toKraken(asset) + "GBP", ms);
+  if (p == null) { const u = await krakenCandle(toKraken(asset) + "USD", ms); if (u != null) { const fx = await fxToGbp("USD", ms); if (fx) p = u * fx; } }
+  pc[k] = p; await sleep(80); return p;
 }
 
 /* ---------- turn one trade into app rows ---------- */
@@ -66,7 +87,7 @@ async function emitTrade(t) {
   if (t.feeQty) {
     if (t.feeAsset === t.base && t.side === "buy") baseQty -= t.feeQty;   // fee taken from coins received
     else { const p = await gbpPrice(t.feeAsset, t.ms);
-      if (p != null) fee = t.feeQty * p; else warn(`No GBP price for fee asset ${t.feeAsset} (${t.src}:${t.id}).`);
+      if (p != null) fee = t.feeQty * p; else warn(`No GBP price for fee asset ${t.feeAsset}. Some fees on ${t.src} are set to 0.`);
       if (!FIAT.has(t.feeAsset) && t.feeAsset !== t.base && t.feeAsset !== t.quote)
         warn(`Fees paid in ${t.feeAsset} are treated as extra cost only. Strictly, spending ${t.feeAsset} is also a small disposal.`); }
   }
