@@ -1,3 +1,3 @@
-https://www.gov.uk/capital-gains-tax/rates 1b0414758b441f4a1e9e6e0f69ff8974306a70b720bebf6fd7aed18ebbd56100
-https://www.gov.uk/capital-gains-tax/allowances 1575fa4214e12fd282b100d5292fb2da50a704b041e021e73bcfc308bb939414
+https://www.gov.uk/capital-gains-tax/rates 823ce423113c2ef05fa174bc67daa531b1682941d84c34e1458321dea5796fa1
+https://www.gov.uk/capital-gains-tax/allowances ec9b067bbba175c3159d98e39303c2854a53ff4516a91d6478c7988334119fcc
 https://www.gov.uk/hmrc-internal-manuals/cryptoassets-manual 05053ddb4b4d442dd347325c54e38d610201ba9821dc1b9b9b01c0afb8310cd0
